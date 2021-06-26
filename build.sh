@@ -81,6 +81,7 @@ $COMPILERPATH/aarch64-linux-android26-clang\
    ~/project/crow/crow/proto/node.cpp \
    ~/project/crow/crow/proto/node-sync.cpp \
    ~/project/crow/crow/src/hostaddr.cpp \
+   ~/project/crow/crow/src/hostaddr_view.cpp \
    ~/project/igris/igris/sync/syslock_mutex.cpp \
    ~/project/igris/igris/osutil/src/posix.cpp \
    ~/project/igris/igris/util/string.cpp \

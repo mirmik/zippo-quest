@@ -14,6 +14,7 @@
 
 #include <rabbit/opengl/drawer.h>
 #include <rabbit/opengl/shader_collection.h>
+#include <rabbit/opengl/projection.h>
 #include <rabbit/geom/surface.h>
 #include <rabbit/mesh.h>
 #include <rabbit/util.h>
@@ -31,6 +32,9 @@
 #include <thread>
 #include <map>
 #include <chrono>
+#include <mutex>
+
+std::mutex frame_mutex;
 
 #define error(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
@@ -45,43 +49,49 @@ std::map<int, ovrPosef> PoseMap_;
 rabbit::font font;
 rabbit::textzone textzone;
 
+rabbit::opengl_texture left_eye_texture;
+rabbit::opengl_texture right_eye_texture;
+
+cv::Mat left_frame;
+cv::Mat right_frame;
+
 static const char*
 egl_get_error_string(EGLint error)
 {
     switch (error)
     {
-    case EGL_SUCCESS:
-        return "EGL_SUCCESS";
-    case EGL_NOT_INITIALIZED:
-        return "EGL_NOT_INITIALIZED";
-    case EGL_BAD_ACCESS:
-        return "EGL_BAD_ACCESS";
-    case EGL_BAD_ALLOC:
-        return "EGL_BAD_ALLOC";
-    case EGL_BAD_ATTRIBUTE:
-        return "EGL_BAD_ATTRIBUTE";
-    case EGL_BAD_CONTEXT:
-        return "EGL_BAD_CONTEXT";
-    case EGL_BAD_CONFIG:
-        return "EGL_BAD_CONFIG";
-    case EGL_BAD_CURRENT_SURFACE:
-        return "EGL_BAD_CURRENT_SURFACE";
-    case EGL_BAD_DISPLAY:
-        return "EGL_BAD_DISPLAY";
-    case EGL_BAD_SURFACE:
-        return "EGL_BAD_SURFACE";
-    case EGL_BAD_MATCH:
-        return "EGL_BAD_MATCH";
-    case EGL_BAD_PARAMETER:
-        return "EGL_BAD_PARAMETER";
-    case EGL_BAD_NATIVE_PIXMAP:
-        return "EGL_BAD_NATIVE_PIXMAP";
-    case EGL_BAD_NATIVE_WINDOW:
-        return "EGL_BAD_NATIVE_WINDOW";
-    case EGL_CONTEXT_LOST:
-        return "EGL_CONTEXT_LOST";
-    default:
-        abort();
+        case EGL_SUCCESS:
+            return "EGL_SUCCESS";
+        case EGL_NOT_INITIALIZED:
+            return "EGL_NOT_INITIALIZED";
+        case EGL_BAD_ACCESS:
+            return "EGL_BAD_ACCESS";
+        case EGL_BAD_ALLOC:
+            return "EGL_BAD_ALLOC";
+        case EGL_BAD_ATTRIBUTE:
+            return "EGL_BAD_ATTRIBUTE";
+        case EGL_BAD_CONTEXT:
+            return "EGL_BAD_CONTEXT";
+        case EGL_BAD_CONFIG:
+            return "EGL_BAD_CONFIG";
+        case EGL_BAD_CURRENT_SURFACE:
+            return "EGL_BAD_CURRENT_SURFACE";
+        case EGL_BAD_DISPLAY:
+            return "EGL_BAD_DISPLAY";
+        case EGL_BAD_SURFACE:
+            return "EGL_BAD_SURFACE";
+        case EGL_BAD_MATCH:
+            return "EGL_BAD_MATCH";
+        case EGL_BAD_PARAMETER:
+            return "EGL_BAD_PARAMETER";
+        case EGL_BAD_NATIVE_PIXMAP:
+            return "EGL_BAD_NATIVE_PIXMAP";
+        case EGL_BAD_NATIVE_WINDOW:
+            return "EGL_BAD_NATIVE_WINDOW";
+        case EGL_CONTEXT_LOST:
+            return "EGL_CONTEXT_LOST";
+        default:
+            abort();
     }
 }
 
@@ -90,18 +100,18 @@ gl_get_framebuffer_status_string(GLenum status)
 {
     switch (status)
     {
-    case GL_FRAMEBUFFER_UNDEFINED:
-        return "GL_FRAMEBUFFER_UNDEFINED";
-    case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
-        return "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT";
-    case GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
-        return "GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT";
-    case GL_FRAMEBUFFER_UNSUPPORTED:
-        return "GL_FRAMEBUFFER_UNSUPPORTED";
-    case GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE:
-        return "GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE";
-    default:
-        abort();
+        case GL_FRAMEBUFFER_UNDEFINED:
+            return "GL_FRAMEBUFFER_UNDEFINED";
+        case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
+            return "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT";
+        case GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
+            return "GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT";
+        case GL_FRAMEBUFFER_UNSUPPORTED:
+            return "GL_FRAMEBUFFER_UNSUPPORTED";
+        case GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE:
+            return "GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE";
+        default:
+            abort();
     }
 }
 
@@ -673,6 +683,86 @@ std::vector<rabbit::pose3> hand_positions;
 std::vector<rabbit::pose3> last_hand_positions;
 std::vector<std::pair<rabbit::vec3, rabbit::vec3>> vertices2;
 std::vector<std::pair<rabbit::vec3, rabbit::vec3>> vertices_sphere;
+
+
+int iiii = 0;
+
+int enable_logs_drawing = 0;
+void draw_logs(
+    rabbit::opengl_drawer& drawer,
+    int eye_number,
+    linalg::mat<float, 4, 4> eyediffpos,
+    linalg::mat<float, 4, 4> projection_matrix)
+{
+    auto edtrans = eyediffpos.w.xyz() / 2;
+
+    linalg::mat<float, 4, 4> texttrans;
+    linalg::mat<float, 4, 4> texttranspos1 = mul(
+                mul(
+                    linalg::rotation_matrix(linalg::rotation_quat<float>({0, 1, 0}, M_PI / 10)),
+                    linalg::rotation_matrix(linalg::rotation_quat<float>({1, 0, 0}, -M_PI / 10))
+                ),
+                linalg::translation_matrix<float>({0, 0, -10})
+            );
+
+    linalg::mat<float, 4, 4> texttranspos2 = mul(
+                mul(
+                    linalg::rotation_matrix(linalg::rotation_quat<float>({0, 1, 0}, 0)),
+                    linalg::rotation_matrix(linalg::rotation_quat<float>({1, 0, 0}, -M_PI / 10))
+                ),
+                mul(
+                    linalg::translation_matrix<float>({0, 0, -4000}),
+                    linalg::scaling_matrix<float>({820, 820, 1})
+                )
+            );
+
+    switch (eye_number)
+    {
+        /*case 0:
+            {
+                texttrans = mul(
+                                linalg::translation_matrix<float>({0, 0.00, 0}),
+                                mul(
+                                    mul(
+                                        *(linalg::mat<float, 4, 4>*)(&projection_matrix),
+                                        linalg::translation_matrix<float>(-edtrans)
+                                    ),
+                                    texttranspos2
+                                )
+
+                            );
+            };
+            break;*/
+        case 1:
+            {
+                texttrans = mul(
+                                linalg::translation_matrix<float>({0, 0, 0}),
+                                mul(
+                                    mul(
+                                        projection_matrix,
+                                        linalg::translation_matrix<float>(edtrans)
+                                    ),
+                                    texttranspos2
+                                )
+
+                            );
+            }
+            break;
+    }
+
+    auto cursor = rabbit::textzone_cursor(&textzone, 0, 1);
+    std::string str("Mirmik Was here ");
+    drawer.print_text(font, cursor, str, {0, 1, 0}, texttrans);
+    drawer.print_text(font, cursor, str, {0, 1, 0}, texttrans);
+    drawer.print_text(font, cursor, str, {0, 1, 0}, texttrans);
+    drawer.print_text(font, cursor, str, {0, 1, 0}, texttrans);
+    drawer.print_text(font, cursor, str, {0, 1, 0}, texttrans);
+    drawer.print_text(font, cursor, str, {0, 1, 0}, texttrans);
+    drawer.print_text(font, cursor, str, {0, 1, 0}, texttrans);
+    drawer.print_text(font, cursor, str, {0, 1, 0}, texttrans);
+}
+
+float mmm = 0.07;
 static ovrLayerProjection2
 renderer_render_frame(struct renderer* renderer, ovrTracking2* tracking)
 {
@@ -688,27 +778,19 @@ renderer_render_frame(struct renderer* renderer, ovrTracking2* tracking)
         VRAPI_FRAME_LAYER_FLAG_CHROMATIC_ABERRATION_CORRECTION;
     layer.HeadPose = tracking->HeadPose;
 
-
-    if ((sts = glGetError()))
-    {
-        error("ERROR:: %s", egl_get_error_string(eglGetError()));
-        switch (sts)
-        {
-        case GL_INVALID_ENUM: __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "GL_INVALID_ENUM"); break;
-        case GL_INVALID_VALUE: __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "GL_INVALID_VALUE"); break;
-        case GL_INVALID_OPERATION: __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "GL_INVALID_OPERATION"); break;
-        case GL_INVALID_FRAMEBUFFER_OPERATION: __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "GL_INVALID_FRAMEBUFFER_OPERATION"); break;
-        case GL_OUT_OF_MEMORY: __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "GL_OUT_OF_MEMORY"); break;
-        }
-        abort();
-    }
-
     for (int i = 0; i < VRAPI_FRAME_LAYER_EYE_MAX; ++i)
     {
+        int eye_number = i;
+
         ovrMatrix4f view_matrix =
             ovrMatrix4f_Transpose(&tracking->Eye[i].ViewMatrix);
         ovrMatrix4f projection_matrix =
             ovrMatrix4f_Transpose(&tracking->Eye[i].ProjectionMatrix);
+
+        linalg::mat<float, 4, 4> left_eye_view = *(linalg::mat<float, 4, 4>*)(&tracking->Eye[0].ViewMatrix);
+        linalg::mat<float, 4, 4> right_eye_view = *(linalg::mat<float, 4, 4>*)(&tracking->Eye[1].ViewMatrix);
+
+        linalg::mat<float, 4, 4> eyediffpos = mul(linalg::inverse(left_eye_view), right_eye_view);
 
         struct framebuffer* framebuffer = &renderer->framebuffers[i];
         layer.Textures[i].ColorSwapChain =
@@ -732,67 +814,92 @@ renderer_render_frame(struct renderer* renderer, ovrTracking2* tracking)
         auto & drawer = renderer->rabbit_drawer;
 
         auto surf_sphere = rabbit::sphere_surface(0.5);
-        //auto surf = rabbit::parabolic_surface(0.5, 0.5);
         auto surf = rabbit::torus_surface(2, 0.3);
         auto mesh = rabbit::surface_rubic_mesh(surf, 40, 40);
         auto mesh_sphere = rabbit::surface_rubic_mesh(surf_sphere, 40, 40);
 
 
-        //drawer.set_buffers(
-        //    renderer->geometry.vertex_array,
-        //    renderer->geometry.vertex_buffer,
-        //    renderer->geometry.index_buffer);
-
         renderer->geometry.vertex_buffer = drawer.VBO;
         renderer->geometry.index_buffer = drawer.EBO;
         renderer->geometry.vertex_array = drawer.VAO;
-
-
-        /*float T = 10;
-        GLfloat vertices[] =
-        {
-            T,  T, 0.99999f * 10, 1., 1., 1., // Top Right
-            T, -T, 0.99999f * 10, 1., 1., 1., // Bottom Right
-            -T, -T, 0.99999f * 10, 1., 1., 1., // Bottom Left
-            -T,  T, 0.99999f * 10, 1., 1., 1., // Top Left
-        };
-        GLuint indices[] =    // Note that we start from 0!
-        {
-            0, 1, 3,  // First Triangle
-            1, 2, 3   // Second Triangle
-        };*/
-
-        /*if ((sts = glGetError()))
-        {
-            switch (sts)
-            {
-            case GL_INVALID_ENUM: __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "GL_INVALID_ENUM"); break;
-            case GL_INVALID_VALUE: __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "GL_INVALID_VALUE"); break;
-            case GL_INVALID_OPERATION: __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "GL_INVALID_OPERATION"); break;
-            case GL_INVALID_FRAMEBUFFER_OPERATION: __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "GL_INVALID_FRAMEBUFFER_OPERATION"); break;
-            case GL_OUT_OF_MEMORY: __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "GL_OUT_OF_MEMORY"); break;
-
-            }
-            abort();
-        }*/
 
         static uint8_t inited1 = 0;
         if (!inited1)
         {
             inited1 = 1;
 
+            left_eye_texture.bind();
+            right_eye_texture.bind();
             font.init(rabbit::naive_font16x26_texture, GL_LUMINANCE);
-            textzone.init(10, 10);
+            textzone.init(20, 20);
         }
 
-        drawer.draw_mesh(mesh_sphere,
-                         linalg::mat<float, 4, 4>((float*)&model_matrix),
-                         linalg::mat<float, 4, 4>((float*)&view_matrix),
-                         linalg::mat<float, 4, 4>((float*)&projection_matrix)
-                        );
+        float lup = 0.05;
+
+        switch (eye_number)
+        {
+            case 0:
+                {
+                    //iiii ++;
+                    //if (iiii == 30) iiii = 2;
+                    //left_eye_texture.set_finish_flag_texture(iiii, 20);
+
+                    //std::lock_guard<std::mutex> lock(frame_mutex);
+
+                    left_eye_texture.rebind();
+                    drawer.draw_rgb_texture_2d(
+                    {
+                        {{ -1, -1, 0.99999}, {0, 0}},
+                        {{ -1, 1, 0.99999}, {0, 1}},
+                        {{ 1, -1, 0.99999}, {1, 0}},
+                        {{ 1, 1, 0.99999}, {1, 1}},
+                    },
+                    {{0, 1, 2}, {1, 2, 3}},
+                    left_eye_texture,
+                    linalg::translation_matrix<float>({mmm, lup, 0})
+                    );
+                }
+                break;
 
 
-        linalg::mat<float, 4, 4> mm((float*)&model_matrix);
+            case 1:
+                {
+                    //std::lock_guard<std::mutex> lock(frame_mutex);
+
+                    right_eye_texture.rebind();
+                    drawer.draw_rgb_texture_2d(
+                    {
+                        {{ -1, -1, 0.99999}, {0, 0}},
+                        {{ -1, 1, 0.99999}, {0, 1}},
+                        {{ 1, -1, 0.99999}, {1, 0}},
+                        {{ 1, 1, 0.99999}, {1, 1}},
+                    },
+                    {{0, 1, 2}, {1, 2, 3}},
+                    right_eye_texture,
+                    linalg::translation_matrix<float>({ -mmm, 0, 0})
+                    );
+                }
+                break;
+
+        }
+
+        if (enable_logs_drawing)
+            draw_logs(
+                drawer,
+                eye_number,
+                eyediffpos,
+                *(linalg::mat<float, 4, 4>*)(&projection_matrix)
+            );
+
+
+        //rabbit::mat4 projection =
+        //    rabbit::opengl_perspective(rabbit::deg(100) / aspect, aspect, 0.1, 100);
+
+
+
+
+
+        /*linalg::mat<float, 4, 4> mm((float*)&model_matrix);
         linalg::mat<float, 4, 4> vm((float*)&view_matrix);
         linalg::mat<float, 4, 4> pm((float*)&projection_matrix);
 
@@ -820,16 +927,7 @@ renderer_render_frame(struct renderer* renderer, ovrTracking2* tracking)
         glEnableVertexAttribArray(0);
         glEnableVertexAttribArray(1);
 
-        /*drawer.draw_mesh(
-            mesh_sphere,
-            linalg::identity,
-            linalg::identity,
-            linalg::identity
-        );*/
 
-
-
-#if 1
         if (vertices2.size() == 0)
         {
             for (auto & v : mesh.vertices)
@@ -853,7 +951,6 @@ renderer_render_frame(struct renderer* renderer, ovrTracking2* tracking)
         static uint8_t inited = 0;
         if (!inited)
         {
-
             for (int i = 0; i < 8; ++i)
             {
                 float strt = -1;
@@ -939,90 +1036,17 @@ renderer_render_frame(struct renderer* renderer, ovrTracking2* tracking)
             drawer.draw_triangles(
                 (float*)vertices2.data(), vertices2.size(),
                 (uint32_t*)mesh.triangles.data(), mesh.triangles.size());
-        }
+        }*/
 
 
 
-        /*drawer.uniform_mat4f(model_matrix_loc, rabbit::pose3().to_mat4());
-        drawer.uniform_mat4f(view_matrix_loc, rabbit::pose3().to_mat4());
-        drawer.uniform_mat4f(proj_matrix_loc, rabbit::pose3().to_mat4());
 
-        drawer.set_vertices_stride(6);
-        drawer.draw_triangles(vertices, 4, indices, 2);*/
-#endif
-
-#if 0
-        auto surf0 = rabbit::torus_surface(4, 0.2);
-        auto surf2 = rabbit::sphere_surface(2);
-        auto surf3 = rabbit::torus_surface(7, 0.2);
-        auto surf4 = rabbit::torus_surface(8, 0.2);
-        auto surf5 = rabbit::sphere_surface(0.6);
-
-        auto mesh0 = rabbit::surface_rubic_mesh(surf0, 30, 20);
-        auto mesh2 = rabbit::surface_rubic_mesh(surf2, 30, 20);
-        auto mesh3 = rabbit::surface_rubic_mesh(surf3, 30, 20);
-        auto mesh4 = rabbit::surface_rubic_mesh(surf4, 30, 20);
-        auto mesh5 = rabbit::surface_rubic_mesh(surf5, 30, 20);
-
-        static int inited2 = 0;
-
-
-        static std::vector<std::pair<rabbit::vec3, rabbit::vec3>> h0;
-        static std::vector<std::pair<rabbit::vec3, rabbit::vec3>> h2;
-        static std::vector<std::pair<rabbit::vec3, rabbit::vec3>> h3;
-        static std::vector<std::pair<rabbit::vec3, rabbit::vec3>> h4;
-        static std::vector<std::pair<rabbit::vec3, rabbit::vec3>> h5;
-        if (!inited2)
-        {
-            h0 = draw_mesh(drawer, mesh0);
-            h2 = draw_mesh(drawer, mesh2);
-            h3 = draw_mesh(drawer, mesh3);
-            h4 = draw_mesh(drawer, mesh4);
-            h5 = draw_mesh(drawer, mesh5);
-            inited2 = 1;
-
-
-            font.init(rabbit::naive_font16x26_texture);
-            textzone.init(30, 30);
-        }
-
-        auto RX = rabbit::rot3({1, 0, 0}, rabbit::deg(90));
-        double dtime = mticks() / 1000;
-        auto model = rabbit::rot3({0, 0, 1}, rabbit::deg(dtime * 16));
-
-        draw_mesh_2(drawer, mesh0, h0, (RX * rabbit::rot3(rabbit::vec3{0.3, 0.7, 0}, rabbit::deg(20)) * model).to_mat4(), model_matrix_loc);
-        draw_mesh_2(drawer, mesh2, h2, (RX * model.inverse()).to_mat4(), model_matrix_loc);
-        draw_mesh_2(drawer, mesh3, h3, (RX * model).to_mat4(), model_matrix_loc);
-        draw_mesh_2(drawer, mesh4, h4, (RX * rabbit::rot3(rabbit::vec3{0.6, 0.2, 0}, rabbit::deg(20)) * model.inverse()).to_mat4(), model_matrix_loc);
-        draw_mesh_2(drawer, mesh5, h5, (RX * rabbit::mov3({0.55 * sin(dtime), 0.55 * cos(dtime), 0}) * model).to_mat4(), model_matrix_loc);
-#endif
 
 
         last_hand_positions = hand_positions;
 
         glBindVertexArray(0);
-
-
-
         glUseProgram(0);
-
-        /*linalg::mat<float,4,4> mM {(const float*) &model_matrix};
-        linalg::mat<float,4,4> vM {(const float*) &view_matrix};
-        linalg::mat<float,4,4> pM {(const float*) &projection_matrix};
-
-
-        auto cursor = rabbit::textzone_cursor(&textzone, 0, 0);
-        drawer.print_text(font, cursor, "HelloWorld", {0, 1, 0});
-        drawer.print_text(font, cursor, "HelloWorld", {0, 1, 0});
-        drawer.print_text(font, cursor, "HelloWorld", {0, 1, 0});
-        drawer.print_text(font, cursor, "HelloWorld", {0, 1, 0});
-        drawer.print_text(font, cursor, "HelloWorld", {0, 1, 0});
-        drawer.print_text(font, cursor, "HelloWorld", {0, 1, 0});
-        drawer.print_text(font, cursor, "HelloWorld", {0, 1, 0});*/
-
-
-
-
 
         glClearColor(0.0, 0.0, 0.0, 1.0);
         glScissor(0, 0, 1, framebuffer->height);
@@ -1070,34 +1094,34 @@ app_on_cmd(struct android_app* android_app, int32_t cmd)
     struct app* app = (struct app*)android_app->userData;
     switch (cmd)
     {
-    case APP_CMD_START:
-        info("onStart()");
-        break;
-    case APP_CMD_RESUME:
-        info("onResume()");
-        app->resumed = true;
-        break;
-    case APP_CMD_PAUSE:
-        info("onPause()");
-        app->resumed = false;
-        break;
-    case APP_CMD_STOP:
-        info("onStop()");
-        break;
-    case APP_CMD_DESTROY:
-        info("onDestroy()");
-        app->window = NULL;
-        break;
-    case APP_CMD_INIT_WINDOW:
-        info("surfaceCreated()");
-        app->window = android_app->window;
-        break;
-    case APP_CMD_TERM_WINDOW:
-        info("surfaceDestroyed()");
-        app->window = NULL;
-        break;
-    default:
-        break;
+        case APP_CMD_START:
+            info("onStart()");
+            break;
+        case APP_CMD_RESUME:
+            info("onResume()");
+            app->resumed = true;
+            break;
+        case APP_CMD_PAUSE:
+            info("onPause()");
+            app->resumed = false;
+            break;
+        case APP_CMD_STOP:
+            info("onStop()");
+            break;
+        case APP_CMD_DESTROY:
+            info("onDestroy()");
+            app->window = NULL;
+            break;
+        case APP_CMD_INIT_WINDOW:
+            info("surfaceCreated()");
+            app->window = android_app->window;
+            break;
+        case APP_CMD_TERM_WINDOW:
+            info("surfaceDestroyed()");
+            app->window = NULL;
+            break;
+        default:
+            break;
     }
 }
 
@@ -1143,6 +1167,7 @@ app_handle_input(struct app* app)
     bool back_button_down_current_frame = false;
 
     int i = 0;
+    int tracker_index = 0;
     ovrInputCapabilityHeader capability;
     while (vrapi_EnumerateInputDevices(app->ovr, i, &capability) >= 0)
     {
@@ -1170,29 +1195,51 @@ app_handle_input(struct app* app)
                 &tracking);
 
             PoseMap_[capability.DeviceID] = tracking.HeadPose.Pose;
+
+
+
+
+            if (tracker_index == 1)
+            {
+                static int last_button_b_pressed = 0;
+
+                if ((input_state.Buttons & ovrButton_B) && last_button_b_pressed == false)
+                {
+                    enable_logs_drawing = !enable_logs_drawing;
+                }
+                else
+                {
+                }
+
+                last_button_b_pressed = input_state.Buttons & ovrButton_B ;
+            }
+
+
+            if (tracker_index == 0)
+            {
+                static int last_button_y_pressed = 0;
+                static int last_button_x_pressed = 0;
+
+                if ((input_state.Buttons & ovrButton_Y) && last_button_y_pressed == false)
+                {
+                    mmm += 0.005;
+                }
+
+                if ((input_state.Buttons & ovrButton_X) && last_button_x_pressed == false)
+                {
+                    mmm -= 0.005;
+                }
+
+                last_button_x_pressed = input_state.Buttons & ovrButton_X ;
+                last_button_y_pressed = input_state.Buttons & ovrButton_Y ;
+            }
+
+
+            tracker_index++;
         }
-
-        /*if (capability.Type == ovrControllerType_StandardPointer)
-        {
-            ovrInputStateStandardPointer input_state;
-
-            GripPose_ = input_state.GripPose;
-            PointerPose_ = input_state.PointerPose;
-        }*/
 
         ++i;
     }
-
-    //if (app->back_button_down_previous_frame && !back_button_down_current_frame)
-    if (back_button_down_current_frame)
-    {
-        button_pressed = true;
-        //vrapi_ShowSystemUI(app->java, VRAPI_SYS_UI_CONFIRM_QUIT_MENU);
-    }
-    else
-        button_pressed = false;
-
-    app->back_button_down_previous_frame = back_button_down_current_frame;
 }
 
 static void
@@ -1220,16 +1267,37 @@ app_destroy(struct app* app)
 }
 
 
-void routine(std::string_view message)
+void routine_left_eye(std::string_view message)
 {
-    __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "STREAM");
+    __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "LSTREAM");
     int sts;
 
-    auto frame = cv::imdecode({message.data(), (int)message.size()}, cv::IMREAD_COLOR);
+    //std::lock_guard<std::mutex> lock(frame_mutex);
+    left_frame = cv::imdecode({message.data(), (int)message.size()}, cv::IMREAD_COLOR);
+
+    left_eye_texture.reference_buffer(
+        left_frame.data,
+        left_frame.cols, left_frame.rows,
+        GL_RGB, GL_RGB, GL_UNSIGNED_BYTE);
+}
+
+void routine_right_eye(std::string_view message)
+{
+    __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "RSTREAM");
+    int sts;
+
+    //std::lock_guard<std::mutex> lock(frame_mutex);
+    right_frame = cv::imdecode({message.data(), (int)message.size()}, cv::IMREAD_COLOR);
+
+    right_eye_texture.reference_buffer(
+        right_frame.data,
+        right_frame.cols, right_frame.rows,
+        GL_RGB, GL_RGB, GL_UNSIGNED_BYTE);
 }
 
 crow::udpgate udpgate;
-crow::spam_subscriber subs(routine);
+crow::spam_subscriber lsubs(routine_left_eye);
+crow::spam_subscriber rsubs(routine_right_eye);
 
 void
 android_main(struct android_app* android_app)
@@ -1238,18 +1306,27 @@ android_main(struct android_app* android_app)
                                    AWINDOW_FLAG_KEEP_SCREEN_ON, 0);
 
 
+    left_eye_texture.create(60, 60, GL_RGB, GL_RGB, GL_UNSIGNED_BYTE);
+    left_eye_texture.set_finish_flag_texture(30, 30);
+
+    right_eye_texture.create(60, 60, GL_RGB, GL_RGB, GL_UNSIGNED_BYTE);
+    right_eye_texture.set_finish_flag_texture(30, 30);
+
     udpgate.bind(12);
     udpgate.open(10010);
-    subs.bind(1);
+    lsubs.bind(1);
+    rsubs.bind(2);
     crow::start_spin();
 
     std::thread thr ([&]()
     {
-        auto addr = crow::address(".12.192.168.1.105:10041");
+        auto laddr = crow::address(".12.192.168.1.105:10041");
+        auto raddr = crow::address(".12.192.168.1.105:10042");
 
         while (1)
         {
-            subs.subscribe(1, addr);
+            lsubs.subscribe(1, laddr);
+            rsubs.subscribe(1, raddr);
             std::this_thread::sleep_for(std::chrono::milliseconds(3000));
         }
     });
