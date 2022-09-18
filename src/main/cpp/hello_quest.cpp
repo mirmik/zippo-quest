@@ -16,7 +16,7 @@
 #include <rabbit/opengl/shader_collection.h>
 #include <rabbit/opengl/projection.h>
 #include <rabbit/geom/surface.h>
-#include <rabbit/mesh.h>
+#include <rabbit/mesh/mesh.h>
 #include <rabbit/util.h>
 
 #include <rabbit/font/font.h>
@@ -650,23 +650,27 @@ double mticks()
     return (double) tv.tv_usec / 1000 + tv.tv_sec * 1000;
 }
 
-auto draw_mesh(rabbit::opengl_drawer & drawer, rabbit::mesh & mesh)
+auto draw_mesh(rabbit::opengl_drawer & drawer, rabbit::mesh<float> & mesh)
 {
 
-    std::vector<std::pair<rabbit::vec3, rabbit::vec3>> vertices;
+    std::vector<std::pair<linalg::vec<float,3>, linalg::vec<float,3>>> vertices;
 
     for (auto & v : mesh.vertices)
     {
-        auto r = (double)std::rand() / (double)(RAND_MAX);
-        auto  g = (double)std::rand() / (double)(RAND_MAX);
-        auto b = (double)std::rand() / (double)(RAND_MAX);
-        vertices.push_back({ v, {r, g, b} });
+        float r = (float)std::rand() / (float)(RAND_MAX);
+        float  g = (float)std::rand() / (float)(RAND_MAX);
+        float b = (float)std::rand() / (float)(RAND_MAX);
+        vertices.push_back(std::make_pair(v, linalg::vec<float,3>(r, g, b)));
     }
 
     return vertices;
 }
 
-void draw_mesh_2(rabbit::opengl_drawer & drawer, rabbit::mesh & mesh, std::vector<std::pair<rabbit::vec3, rabbit::vec3>> vertices, rabbit::mat4 model, int loc)
+void draw_mesh_2(
+    rabbit::opengl_drawer & drawer, 
+    rabbit::mesh<float> & mesh, 
+    std::vector<std::pair<rabbit::vec3, rabbit::vec3>> vertices, 
+    rabbit::mat4f model, int loc)
 {
     drawer.uniform_mat4f(loc, model);
     drawer.draw_triangles(
@@ -678,9 +682,9 @@ rabbit::opengl_shader_program sprg(
     VERTEX_SHADER_2,
     FRAGMENT_SHADER_2);
 bool button_pressed = false;
-std::vector<rabbit::pose3> ring_positions;
-std::vector<rabbit::pose3> hand_positions;
-std::vector<rabbit::pose3> last_hand_positions;
+std::vector<ralgo::pose3<float>> ring_positions;
+std::vector<ralgo::pose3<float>> hand_positions;
+std::vector<ralgo::pose3<float>> last_hand_positions;
 std::vector<std::pair<rabbit::vec3, rabbit::vec3>> vertices2;
 std::vector<std::pair<rabbit::vec3, rabbit::vec3>> vertices_sphere;
 
@@ -815,8 +819,8 @@ renderer_render_frame(struct renderer* renderer, ovrTracking2* tracking)
 
         auto surf_sphere = rabbit::sphere_surface(0.5);
         auto surf = rabbit::torus_surface(2, 0.3);
-        auto mesh = rabbit::surface_rubic_mesh(surf, 40, 40);
-        auto mesh_sphere = rabbit::surface_rubic_mesh(surf_sphere, 40, 40);
+        auto mesh = rabbit::surface_rubic_mesh<float>(surf, 40, 40);
+        auto mesh_sphere = rabbit::surface_rubic_mesh<float>(surf_sphere, 40, 40);
 
 
         renderer->geometry.vertex_buffer = drawer.VBO;
@@ -1267,7 +1271,7 @@ app_destroy(struct app* app)
 }
 
 
-void routine_left_eye(std::string_view message)
+void routine_left_eye(igris::buffer message)
 {
     __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "LSTREAM");
     int sts;
@@ -1281,7 +1285,7 @@ void routine_left_eye(std::string_view message)
         GL_RGB, GL_RGB, GL_UNSIGNED_BYTE);
 }
 
-void routine_right_eye(std::string_view message)
+void routine_right_eye(igris::buffer message)
 {
     __android_log_print(ANDROID_LOG_VERBOSE, "hello_quest", "RSTREAM");
     int sts;
